@@ -4,12 +4,14 @@ const axios = require('axios');
 const { addonBuilder, getRouter } = require('stremio-addon-sdk');
 
 const API = 'https://www.eporner.com/api/v2';
+const SITE = 'https://www.eporner.com';
 const PAGE_SIZE = 30;
 const PREFIX = 'gpub_';
+const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
 
 const manifest = {
     id: 'org.customgayaddon.stream',
-    version: '3.0.0',
+    version: '3.1.0',
     name: 'Gay Video Catalog Addon',
     description: 'Katalog video dari sumber publik',
     resources: ['catalog', 'meta', 'stream'],
@@ -47,6 +49,7 @@ function toMeta(video) {
     };
 }
 
+// ---------- Katalog ----------
 builder.defineCatalogHandler(async (args) => {
     try {
         const extra = (args && args.extra) || {};
@@ -85,6 +88,7 @@ async function getVideo(id) {
     return data;
 }
 
+// ---------- Meta ----------
 builder.defineMetaHandler(async (args) => {
     const id = args.id.replace(PREFIX, '');
     try {
@@ -104,8 +108,7 @@ builder.defineMetaHandler(async (args) => {
     }
 });
 
-const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
-const SITE = 'https://www.eporner.com';
+// ---------- Ekstraksi link mp4 ----------
 
 // Hash untuk endpoint xhr Eporner: 4 potongan hex (8 karakter) -> base36
 function calcHash(h) {
@@ -116,49 +119,63 @@ function calcHash(h) {
     return out;
 }
 
-async function getDirectStreams(pageUrl) {
-    const page = await http.get(pageUrl, {
+// Halaman video biasa kena gerbang umur, jadi pakai halaman embed.
+// "dbg" opsional: kalau diisi, hasil tiap langkah dicatat untuk /debug.
+async function getDirectStreams(id, dbg) {
+    const embedUrl = `${SITE}/embed/${id}/`;
+    const page = await http.get(embedUrl, {
         timeout: 6000,
-        headers: { 'User-Agent': UA, Referer: SITE + '/' }
+        headers: { 'User-Agent': UA, Referer: SITE + '/', 'Accept-Language': 'en-US,en;q=0.9' }
     });
     const html = typeof page.data === 'string' ? page.data : '';
+    const cookie = (page.headers['set-cookie'] || []).map(c => c.split(';')[0]).join('; ');
 
     const vid = (html.match(/vid\s*[:=]\s*['"]([A-Za-z0-9]+)['"]/) || [])[1];
     const hash = (html.match(/hash\s*[:=]\s*['"]([0-9a-f]{32})['"]/) || [])[1];
     const found = [];
-
-    // Cara 1: endpoint xhr
-    if (vid && hash) {
-        try {
-            const { data } = await http.get(`${SITE}/xhr/video/${vid}`, {
-                timeout: 6000,
-                params: {
-                    hash: calcHash(hash),
-                    domain: 'www.eporner.com',
-                    fallback: 'false',
-                    embed: 'false',
-                    supportedFormats: 'mp4'
-                },
-                headers: { 'User-Agent': UA, Referer: pageUrl, 'X-Requested-With': 'XMLHttpRequest' }
-            });
-            const mp4 = data && data.sources && data.sources.mp4;
-            if (mp4) {
-                for (const [label, info] of Object.entries(mp4)) {
-                    const src = info && (info.src || info.url);
-                    if (src) found.push({ label, url: src.startsWith('//') ? 'https:' + src : src });
-                }
-            }
-        } catch (e) {
-            console.error('xhr error:', e.message);
-        }
+    if (dbg) {
+        dbg.vid = vid;
+        dbg.hashFound = !!hash;
     }
 
-    // Cara 2: link download di halaman
-    if (!found.length) {
-        const re = /href="(\/dload\/[^"]+?-(\d{3,4})p[^"]*\.mp4)"/g;
-        let m;
-        while ((m = re.exec(html)) !== null) {
-            found.push({ label: m[2] + 'p', url: SITE + m[1] });
+    if (vid && hash) {
+        for (const embedFlag of ['true', 'false']) {
+            try {
+                const r = await http.get(`${SITE}/xhr/video/${vid}`, {
+                    timeout: 6000,
+                    validateStatus: () => true,
+                    params: {
+                        hash: calcHash(hash),
+                        domain: 'www.eporner.com',
+                        fallback: 'false',
+                        embed: embedFlag,
+                        supportedFormats: 'mp4'
+                    },
+                    headers: {
+                        'User-Agent': UA,
+                        Referer: embedUrl,
+                        'X-Requested-With': 'XMLHttpRequest',
+                        Cookie: cookie
+                    }
+                });
+                if (dbg) {
+                    dbg['xhr_embed_' + embedFlag] = {
+                        status: r.status,
+                        sample: JSON.stringify(r.data).slice(0, 500).replace(/https?:\/\/[^"]+/g, '[url]')
+                    };
+                }
+                const mp4 = r.data && r.data.sources && r.data.sources.mp4;
+                if (mp4) {
+                    for (const [label, info] of Object.entries(mp4)) {
+                        const src = info && (info.src || info.url);
+                        if (src) found.push({ label, url: src.startsWith('//') ? 'https:' + src : src });
+                    }
+                }
+                if (found.length) break;
+            } catch (e) {
+                console.error('xhr error:', e.message);
+                if (dbg) dbg['xhr_embed_' + embedFlag] = { error: e.message };
+            }
         }
     }
 
@@ -166,6 +183,7 @@ async function getDirectStreams(pageUrl) {
     return found.sort((a, b) => height(b.label) - height(a.label));
 }
 
+// ---------- Stream ----------
 builder.defineStreamHandler(async (args) => {
     const id = args.id.replace(PREFIX, '');
     try {
@@ -174,7 +192,7 @@ builder.defineStreamHandler(async (args) => {
 
         if (v && v.url) {
             try {
-                const direct = await getDirectStreams(v.url);
+                const direct = await getDirectStreams(id);
                 for (const d of direct) {
                     streams.push({
                         name: 'Eporner',
@@ -204,39 +222,15 @@ builder.defineStreamHandler(async (args) => {
     }
 });
 
-
-// Halaman diagnosa: buka /debug/<id video Eporner>
+// ---------- Diagnosa: buka /debug/<id video Eporner> ----------
 async function runDebug(id) {
     const out = { id };
     try {
-        const v = await getVideo(id);
-        out.apiUrl = v && v.url;
-
-        const probe = async (url) => {
-            const r = await http.get(url, {
-                timeout: 6000,
-                validateStatus: () => true,
-                headers: { 'User-Agent': UA, Referer: SITE + '/', 'Accept-Language': 'en-US,en;q=0.9' }
-            });
-            const html = typeof r.data === 'string' ? r.data : '';
-            const info = {
-                status: r.status,
-                length: html.length,
-                finalUrl: r.request && r.request.res && r.request.res.responseUrl,
-                title: (html.match(/<title>([^<]*)<\/title>/i) || [])[1],
-                setCookie: r.headers['set-cookie'],
-                vidFound: /vid\s*[:=]\s*['"][A-Za-z0-9]+['"]/.test(html),
-                hashFound: /hash\s*[:=]\s*['"][0-9a-f]{32}['"]/.test(html),
-                dloadLinksFound: (html.match(/\/dload\/[^"]+\.mp4/g) || []).length
-            };
-            // halaman kecil (gerbang umur) ditampilkan utuh
-            if (html.length < 6000) info.html = html;
-            else info.hashContext = (html.match(/.{0,80}hash.{0,120}/i) || [])[0];
-            return info;
-        };
-
-        out.page = await probe(v.url);
-        out.embed = await probe(`${SITE}/embed/${id}/`);
+        const streams = await getDirectStreams(id, out);
+        out.streamsFound = streams.map(s => ({
+            label: s.label,
+            host: s.url.replace(/^https?:\/\/([^/]+).*/, '$1')
+        }));
     } catch (e) {
         out.error = e.message;
     }
