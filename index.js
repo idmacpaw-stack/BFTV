@@ -3,7 +3,7 @@ const axios = require('axios');
 
 const manifest = {
     id: 'org.customgayaddon.stream',
-    version: '2.2.0',
+    version: '2.3.0',
     name: 'Gay Video Catalog Addon',
     description: 'Katalog dan Video Khusus Gay Stabil dari Sumber Publik',
     resources: ['catalog', 'meta', 'stream'],
@@ -23,11 +23,8 @@ const builder = new addonBuilder(manifest);
 
 builder.defineCatalogHandler(async function(args) {
     try {
-        // Kata kunci pencarian default dikunci ke "gay" agar selalu menampilkan konten gay
         let searchQuery = 'gay';
-
-        if (args.extra && args.extra.search) {
-            // Jika pengguna mengetik pencarian spesifik, gabungkan dengan kata kunci gay
+        if (args && args.extra && args.extra.search) {
             searchQuery = `gay ${args.extra.search.trim()}`;
         }
 
@@ -38,23 +35,24 @@ builder.defineCatalogHandler(async function(args) {
         const data = response.data;
         const metas = [];
 
-        if (data && data.videos) {
+        if (data && data.videos && Array.isArray(data.videos)) {
             data.videos.forEach(video => {
-                const videoId = 'gpub_' + Buffer.from(video.url).toString('base64').replace(/=/g, '');
-                metas.push({
-                    id: videoId,
-                    type: 'movie',
-                    name: video.title,
-                    poster: video.default_thumb.src,
-                    posterShape: 'landscape',
-                    description: `Duration: ${video.duration} | Views: ${video.views}`
-                });
+                if (video && video.url && video.title) {
+                    const videoId = 'gpub_' + Buffer.from(video.url).toString('base64').replace(/=/g, '');
+                    metas.push({
+                        id: videoId,
+                        type: 'movie',
+                        name: video.title,
+                        poster: video.default_thumb && video.default_thumb.src ? video.default_thumb.src : '',
+                        posterShape: 'landscape',
+                        description: `Duration: ${video.duration || 'N/A'} | Views: ${video.views || 0}`
+                    });
+                }
             });
         }
 
         return { metas };
     } catch (error) {
-        console.error('Catalog error:', error.message);
         return { metas: [] };
     }
 });
@@ -90,8 +88,9 @@ builder.defineStreamHandler(async function(args) {
         const videoPath = Buffer.from(encodedPart, 'base64').toString('utf8');
         
         const videoIdMatch = videoPath.split('/').filter(Boolean).pop();
+        if (!videoIdMatch) return { streams: [] };
+
         const apiDetailUrl = `https://www.eporner.com/api/v2/video/id/?id=${videoIdMatch}&format=json`;
-        
         const response = await axios.get(apiDetailUrl, { timeout: 8000 });
         const data = response.data;
 
@@ -109,7 +108,6 @@ builder.defineStreamHandler(async function(args) {
 
         return { streams };
     } catch (error) {
-        console.error('Stream error:', error.message);
         return { streams: [] };
     }
 });
@@ -117,12 +115,13 @@ builder.defineStreamHandler(async function(args) {
 const addonInterface = builder.getInterface();
 
 module.exports = async function (req, res) {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', '*');
-    res.setHeader('Content-Type', 'application/json');
-
     try {
-        const urlObj = new URL(req.url, `https://${req.headers.host || 'localhost'}`);
+        res.setHeader('Access-Control-Allow-Origin', '*');
+        res.setHeader('Access-Control-Allow-Headers', '*');
+        res.setHeader('Content-Type', 'application/json');
+
+        const host = req.headers && req.headers.host ? req.headers.host : 'localhost';
+        const urlObj = new URL(req.url || '/', `https://${host}`);
         const pathname = urlObj.pathname;
 
         if (pathname === '/' || pathname === '/manifest.json') {
@@ -143,4 +142,20 @@ module.exports = async function (req, res) {
                     if (idx > -1) {
                         const k = pair.slice(0, idx);
                         const v = pair.slice(idx + 1);
-                        extra[k] =
+                        extra[k] = decodeURIComponent(v.replace(/\+/g, ' '));
+                    }
+                }
+            }
+            if (urlObj.searchParams.has('search')) {
+                extra.search = urlObj.searchParams.get('search');
+            }
+
+            const result = await addonInterface.get(resource, type, id, extra);
+            return res.status(200).send(JSON.stringify(result));
+        }
+
+        return res.status(404).send(JSON.stringify({ error: 'Not Found' }));
+    } catch (e) {
+        return res.status(200).send(JSON.stringify({ metas: [], streams: [], error: e.message }));
+    }
+};
