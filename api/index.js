@@ -19,9 +19,21 @@ const CATALOGS = [
     { id: 'ep_monthly', name: 'Eporner - Top Bulan Ini',    order: 'top-monthly' }
 ];
 
+// Filter konten: hanya video gay. Daftar bisa diubah sesuai selera.
+const REQUIRE_GAY_TAG = true; // video harus punya kata "gay" / "twink" di judul atau tag
+const BLOCK_RE = /\b(shemale|she-male|tranny|trannies|trans|transgender|ladyboy|ladyboys|tgirl|t-girl|lesbian|lesbians|bisexual|futanari)\b/i;
+const GAY_RE = /\b(gays?|twinks?)\b/i;
+
+function classify(v) {
+    const text = `${v.title || ''} ${v.keywords || ''}`;
+    if (BLOCK_RE.test(text)) return 'blocked';
+    if (REQUIRE_GAY_TAG && v.keywords && !GAY_RE.test(text)) return 'not-gay';
+    return 'ok';
+}
+
 const manifest = {
     id: 'org.customgayaddon.stream',
-    version: '5.0.0',
+    version: '5.1.0',
     name: 'Gay Video Catalog Addon',
     description: 'Katalog video dari Eporner',
     resources: ['catalog', 'meta', 'stream'],
@@ -57,6 +69,29 @@ function toMeta(video) {
 }
 
 // ---------- Katalog ----------
+async function fetchEpCatalog(cat, search, page) {
+    const { data } = await http.get(`${EP_API}/video/search/`, {
+        params: {
+            query: search || 'gay',
+            gay: 2, // 2 = hanya konten gay
+            per_page: PAGE_SIZE,
+            page,
+            thumbsize: 'big',
+            order: search ? 'latest' : cat.order,
+            format: 'json'
+        }
+    });
+    const all = Array.isArray(data && data.videos) ? data.videos.filter(v => v && v.id && v.title) : [];
+    const kept = [];
+    const removed = [];
+    for (const v of all) {
+        const verdict = classify(v);
+        if (verdict === 'ok') kept.push(v);
+        else removed.push({ title: v.title, why: verdict });
+    }
+    return { total: all.length, kept, removed };
+}
+
 builder.defineCatalogHandler(async (args) => {
     try {
         const cat = CATALOGS.find(c => c.id === args.id);
@@ -67,23 +102,8 @@ builder.defineCatalogHandler(async (args) => {
         const page = Math.floor(skip / PAGE_SIZE) + 1;
         const search = cat.search && extra.search && extra.search.trim() ? extra.search.trim() : '';
 
-        const { data } = await http.get(`${EP_API}/video/search/`, {
-            params: {
-                query: search || 'all',
-                gay: 2,
-                per_page: PAGE_SIZE,
-                page,
-                thumbsize: 'big',
-                order: search ? 'latest' : cat.order,
-                format: 'json'
-            }
-        });
-
-        const metas = Array.isArray(data && data.videos)
-            ? data.videos.filter(v => v && v.id && v.title).map(toMeta)
-            : [];
-
-        return { metas, cacheMaxAge: 900 };
+        const r = await fetchEpCatalog(cat, search, page);
+        return { metas: r.kept.map(toMeta), cacheMaxAge: 900 };
     } catch (err) {
         console.error('catalog error:', err.message);
         return { metas: [] };
@@ -239,9 +259,30 @@ async function runDebug(id) {
     return out;
 }
 
+// Diagnosa katalog: /debug-catalog/ep_weekly?q=kata
+async function runCatalogDebug(id, q) {
+    const cat = CATALOGS.find(c => c.id === id);
+    if (!cat) return { error: 'katalog tidak ada', ids: CATALOGS.map(c => c.id) };
+    try {
+        const r = await fetchEpCatalog(cat, cat.search ? q : '', 1);
+        return {
+            catalog: id,
+            query: q || '(kosong)',
+            totalFromApi: r.total,
+            kept: r.kept.length,
+            removedCount: r.removed.length,
+            removed: r.removed.slice(0, 10),
+            keptSample: r.kept.slice(0, 5).map(v => ({ title: v.title, keywords: String(v.keywords || '').slice(0, 120) }))
+        };
+    } catch (e) {
+        return { error: e.message };
+    }
+}
+
 const app = express();
 app.use(cors());
 app.get('/', (req, res) => res.redirect('/manifest.json'));
+app.get('/debug-catalog/:id', async (req, res) => res.json(await runCatalogDebug(req.params.id, String(req.query.q || ''))));
 app.get('/debug/:id', async (req, res) => res.json(await runDebug(req.params.id)));
 app.use('/', getRouter(builder.getInterface()));
 
