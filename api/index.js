@@ -211,31 +211,32 @@ async function runDebug(id) {
     try {
         const v = await getVideo(id);
         out.apiUrl = v && v.url;
-        const page = await http.get(v.url, {
-            timeout: 6000,
-            validateStatus: () => true,
-            headers: { 'User-Agent': UA, Referer: SITE + '/' }
-        });
-        const html = typeof page.data === 'string' ? page.data : '';
-        out.pageStatus = page.status;
-        out.pageLength = html.length;
-        out.cloudflareBlock = /Just a moment|cf-chl|challenge-platform|Attention Required/i.test(html);
-        const vid = (html.match(/vid\s*[:=]\s*['"]([A-Za-z0-9]+)['"]/) || [])[1];
-        const hash = (html.match(/hash\s*[:=]\s*['"]([0-9a-f]{32})['"]/) || [])[1];
-        out.vidFound = !!vid;
-        out.hashFound = !!hash;
-        out.dloadLinksFound = (html.match(/\/dload\/[^"]+\.mp4/g) || []).length;
-        out.pageSnippet = html.slice(0, 200);
-        if (vid && hash) {
-            const x = await http.get(`${SITE}/xhr/video/${vid}`, {
+
+        const probe = async (url) => {
+            const r = await http.get(url, {
                 timeout: 6000,
                 validateStatus: () => true,
-                params: { hash: calcHash(hash), domain: 'www.eporner.com', fallback: 'false', embed: 'false', supportedFormats: 'mp4' },
-                headers: { 'User-Agent': UA, Referer: v.url, 'X-Requested-With': 'XMLHttpRequest' }
+                headers: { 'User-Agent': UA, Referer: SITE + '/', 'Accept-Language': 'en-US,en;q=0.9' }
             });
-            out.xhrStatus = x.status;
-            out.xhrSample = JSON.stringify(x.data).slice(0, 400).replace(/https?:\/\/[^"]+/g, '[url]');
-        }
+            const html = typeof r.data === 'string' ? r.data : '';
+            const info = {
+                status: r.status,
+                length: html.length,
+                finalUrl: r.request && r.request.res && r.request.res.responseUrl,
+                title: (html.match(/<title>([^<]*)<\/title>/i) || [])[1],
+                setCookie: r.headers['set-cookie'],
+                vidFound: /vid\s*[:=]\s*['"][A-Za-z0-9]+['"]/.test(html),
+                hashFound: /hash\s*[:=]\s*['"][0-9a-f]{32}['"]/.test(html),
+                dloadLinksFound: (html.match(/\/dload\/[^"]+\.mp4/g) || []).length
+            };
+            // halaman kecil (gerbang umur) ditampilkan utuh
+            if (html.length < 6000) info.html = html;
+            else info.hashContext = (html.match(/.{0,80}hash.{0,120}/i) || [])[0];
+            return info;
+        };
+
+        out.page = await probe(v.url);
+        out.embed = await probe(`${SITE}/embed/${id}/`);
     } catch (e) {
         out.error = e.message;
     }
