@@ -1,4 +1,4 @@
-const { addonBuilder, getRouter } = require('stremio-addon-sdk');
+const { addonBuilder } = require('stremio-addon-sdk');
 const axios = require('axios');
 const cheerio = require('cheerio');
 
@@ -45,6 +45,7 @@ builder.defineCatalogHandler(async function(args) {
 
             if (title && relativeLink) {
                 const videoId = 'bftv_' + Buffer.from(relativeLink).toString('base64').replace(/=/g, '');
+                metas.path = relativeLink;
                 metas.push({
                     id: videoId,
                     type: 'movie',
@@ -97,8 +98,50 @@ builder.defineStreamHandler(async function(args) {
     }
 });
 
-// Mengekspor router khusus untuk serverless Vercel
-const router = getRouter(builder.getInterface());
-module.exports = (req, res) => {
-    router(req, res);
+// Handler export langsung untuk Vercel Serverless Function
+const addonInterface = builder.getInterface();
+
+module.exports = async function (req, res) {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    
+    const url = req.url;
+    
+    if (url === '/' || url === '/manifest.json') {
+        res.setHeader('Content-Type', 'application/json');
+        return res.status(200).send(JSON.stringify(addonInterface.manifest));
+    }
+    
+    const parts = url.split('/').filter(Boolean);
+    if (parts.length >= 2) {
+        const resource = parts[0];
+        const type = parts[1];
+        const id = parts[2] ? parts[2].replace('.json', '') : '';
+        const extraParam = parts[3] ? decodeURIComponent(parts[3].replace('.json', '')) : null;
+        
+        try {
+            let extra = {};
+            if (extraParam) {
+                const queryParts = extraParam.split('&');
+                for (const q of queryParts) {
+                    const [k, v] = q.split('=');
+                    if (k && v) extra[k] = decodeURIComponent(v);
+                }
+            }
+            
+            if (resource === 'catalog') {
+                const result = await addonInterface.get({ resource, type, id, extra });
+                res.setHeader('Content-Type', 'application/json');
+                return res.status(200).send(JSON.stringify(result));
+            } else if (resource === 'stream') {
+                const result = await addonInterface.get({ resource, type, id });
+                res.setHeader('Content-Type', 'application/json');
+                return res.status(200).send(JSON.stringify(result));
+            }
+        } catch (e) {
+            return res.status(500).send({ error: e.message });
+        }
+    }
+    
+    res.status(404).send('Not Found');
 };
