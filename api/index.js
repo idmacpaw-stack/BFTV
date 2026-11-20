@@ -10,7 +10,11 @@ const PAGE_SIZE = 30;
 const PREFIX = 'gpub_';
 
 // Katalog Eporner. "order" mengikuti parameter API Eporner.
+// "queries" = beberapa kata kunci yang digabung supaya hasil lebih banyak.
+// "must" = (opsional) judul/tag wajib cocok dengan pola ini.
 // Pencarian hanya dipasang di katalog pertama supaya hasil tidak muncul berulang.
+const BLACK_RE = /\b(black|ebony|bbc|african|afro)\b/i;
+
 const CATALOGS = [
     { id: 'ep_weekly',  name: "Let's Fun! - Top Minggu Ini",   order: 'top-weekly',   search: true },
     { id: 'ep_latest',  name: "Let's Fun! - Terbaru",          order: 'latest' },
@@ -18,29 +22,37 @@ const CATALOGS = [
     { id: 'ep_rated',   name: "Let's Fun! - Rating Tertinggi", order: 'top-rated' },
     { id: 'ep_monthly', name: "Let's Fun! - Top Bulan Ini",    order: 'top-monthly' },
 
-    // Kategori berdasarkan kata kunci (tetap hanya konten gay lewat filter di bawah)
-    { id: 'ep_black',    name: "Let's Fun! - Black",              query: 'black',              order: 'most-popular' },
-    { id: 'ep_bigdick',  name: "Let's Fun! - Big Dick",           query: 'big dick',           order: 'most-popular' },
-    { id: 'ep_dp',       name: "Let's Fun! - Double Penetration", query: 'double penetration', order: 'most-popular' },
-    { id: 'ep_fisting',  name: "Let's Fun! - Fisting",            query: 'fisting',            order: 'most-popular' },
-    { id: 'ep_orgy',     name: "Let's Fun! - Orgy",               query: 'orgy',               order: 'most-popular' }
+    // Kategori berdasarkan kata kunci (semuanya tetap disaring hanya konten gay)
+    { id: 'ep_black',   name: "Let's Fun! - Black",              order: 'most-popular', must: BLACK_RE,
+      queries: ['black gay', 'ebony gay', 'bbc gay', 'black twink'] },
+    { id: 'ep_bigdick', name: "Let's Fun! - Big Dick",           order: 'most-popular',
+      queries: ['big dick gay', 'huge cock gay'] },
+    { id: 'ep_dp',      name: "Let's Fun! - Double Penetration", order: 'most-popular',
+      queries: ['double penetration gay', 'dp gay'] },
+    { id: 'ep_fisting', name: "Let's Fun! - Fisting",            order: 'most-popular',
+      queries: ['fisting gay'] },
+    { id: 'ep_orgy',    name: "Let's Fun! - Orgy",               order: 'most-popular',
+      queries: ['orgy gay', 'group sex gay'] }
 ];
 
 // Filter konten: hanya video gay. Daftar bisa diubah sesuai selera.
-const REQUIRE_GAY_TAG = true; // video harus punya kata "gay" / "twink" di judul atau tag
-const BLOCK_RE = /\b(shemale|she-male|tranny|trannies|trans|transgender|ladyboy|ladyboys|tgirl|t-girl|lesbian|lesbians|bisexual|futanari)\b/i;
+// Video wajib punya kata "gay" / "twink" di judul atau tag (kalau REQUIRE_GAY_TAG = true).
+const REQUIRE_GAY_TAG = true;
+// Video dibuang kalau judul/tag memuat salah satu kata ini (shemale/trans/wanita/dll).
+const BLOCK_RE = /\b(shemale|she-male|tranny|trannies|trans|transgender|ladyboy|ladyboys|tgirl|t-girl|femboy|femboys|futanari|lesbian|lesbians|bisexual|straight|hetero|mmf|ffm|girl|girls|woman|women|female|babe|babes|pussy|tits|boobs|busty)\b/i;
 const GAY_RE = /\b(gays?|twinks?)\b/i;
 
-function classify(v) {
+function classify(v, must) {
     const text = `${v.title || ''} ${v.keywords || ''}`;
     if (BLOCK_RE.test(text)) return 'blocked';
-    if (REQUIRE_GAY_TAG && v.keywords && !GAY_RE.test(text)) return 'not-gay';
+    if (REQUIRE_GAY_TAG && !GAY_RE.test(text)) return 'not-gay';
+    if (must && !must.test(text)) return 'off-topic';
     return 'ok';
 }
 
 const manifest = {
     id: 'org.customgayaddon.stream',
-    version: '5.3.0',
+    version: '5.4.0',
     name: "Let's Fun!",
     description: "Let's Fun! - katalog video pilihan",
     resources: ['catalog', 'meta', 'stream'],
@@ -76,27 +88,73 @@ function toMeta(video) {
 }
 
 // ---------- Katalog ----------
-async function fetchEpCatalog(cat, search, page) {
+const PER_PAGE = 60; // jumlah hasil per permintaan ke API Eporner
+
+async function searchEp(query, order, page) {
     const { data } = await http.get(`${EP_API}/video/search/`, {
         params: {
-            query: search || cat.query || 'gay',
+            query,
             gay: 2, // 2 = hanya konten gay
-            per_page: PAGE_SIZE,
+            per_page: PER_PAGE,
             page,
             thumbsize: 'big',
-            order: search ? 'latest' : cat.order,
+            order,
             format: 'json'
         }
     });
-    const all = Array.isArray(data && data.videos) ? data.videos.filter(v => v && v.id && v.title) : [];
+    return Array.isArray(data && data.videos) ? data.videos.filter(v => v && v.id && v.title) : [];
+}
+
+// Mengambil, menggabungkan, dan menyaring hasil. Posisi "skip" dipetakan dengan mengambil
+// beberapa halaman sekaligus, supaya halaman berikutnya tidak mengulang halaman pertama
+// walaupun sebagian video terbuang oleh filter.
+async function fetchEpCatalog(cat, search, skip) {
+    const queries = search ? [search] : (cat.queries || ['gay']);
+    const order = search ? 'latest' : cat.order;
+    const need = skip + PAGE_SIZE;
+    const pages = Math.min(6, Math.max(1, Math.ceil(need / (PER_PAGE * 0.4 * queries.length))));
+
+    const jobs = [];
+    queries.forEach((q, qi) => {
+        for (let p = 1; p <= pages; p++) jobs.push({ qi, p, promise: searchEp(q, order, p) });
+    });
+    const settled = await Promise.allSettled(jobs.map(j => j.promise));
+
+    const lists = queries.map(() => []);
+    jobs.forEach((j, i) => {
+        if (settled[i].status === 'fulfilled') lists[j.qi][j.p - 1] = settled[i].value;
+        else console.error('search error:', queries[j.qi], j.p, settled[i].reason && settled[i].reason.message);
+    });
+    const flat = lists.map(pagesArr => [].concat(...pagesArr.map(x => x || [])));
+
+    // gabungkan bergantian antar kata kunci, buang duplikat
+    const merged = [];
+    const seen = new Set();
+    const maxLen = Math.max(0, ...flat.map(l => l.length));
+    for (let i = 0; i < maxLen; i++) {
+        for (const l of flat) {
+            const v = l[i];
+            if (v && !seen.has(v.id)) {
+                seen.add(v.id);
+                merged.push(v);
+            }
+        }
+    }
+
     const kept = [];
     const removed = [];
-    for (const v of all) {
-        const verdict = classify(v);
+    for (const v of merged) {
+        const verdict = classify(v, cat.must);
         if (verdict === 'ok') kept.push(v);
         else removed.push({ title: v.title, why: verdict });
     }
-    return { total: all.length, kept, removed };
+    return {
+        total: merged.length,
+        perQuery: queries.map((q, i) => ({ query: q, count: flat[i].length })),
+        kept,
+        removed,
+        slice: kept.slice(skip, skip + PAGE_SIZE)
+    };
 }
 
 builder.defineCatalogHandler(async (args) => {
@@ -106,11 +164,10 @@ builder.defineCatalogHandler(async (args) => {
 
         const extra = (args && args.extra) || {};
         const skip = parseInt(extra.skip, 10) || 0;
-        const page = Math.floor(skip / PAGE_SIZE) + 1;
         const search = cat.search && extra.search && extra.search.trim() ? extra.search.trim() : '';
 
-        const r = await fetchEpCatalog(cat, search, page);
-        return { metas: r.kept.map(toMeta), cacheMaxAge: 900 };
+        const r = await fetchEpCatalog(cat, search, skip);
+        return { metas: r.slice.map(toMeta), cacheMaxAge: 900 };
     } catch (err) {
         console.error('catalog error:', err.message);
         return { metas: [] };
@@ -266,20 +323,23 @@ async function runDebug(id) {
     return out;
 }
 
-// Diagnosa katalog: /debug-catalog/ep_weekly?q=kata
-async function runCatalogDebug(id, q) {
+// Diagnosa katalog: /debug-catalog/ep_black?q=kata&skip=0
+async function runCatalogDebug(id, q, skip) {
     const cat = CATALOGS.find(c => c.id === id);
     if (!cat) return { error: 'katalog tidak ada', ids: CATALOGS.map(c => c.id) };
     try {
-        const r = await fetchEpCatalog(cat, cat.search ? q : '', 1);
+        const r = await fetchEpCatalog(cat, cat.search ? q : '', skip);
         return {
             catalog: id,
             query: q || '(kosong)',
-            totalFromApi: r.total,
+            skip,
+            perQuery: r.perQuery,
+            totalAfterMerge: r.total,
             kept: r.kept.length,
+            shownOnThisPage: r.slice.length,
             removedCount: r.removed.length,
-            removed: r.removed.slice(0, 10),
-            keptSample: r.kept.slice(0, 5).map(v => ({ title: v.title, keywords: String(v.keywords || '').slice(0, 120) }))
+            removed: r.removed.slice(0, 12),
+            keptSample: r.slice.slice(0, 6).map(v => ({ title: v.title, keywords: String(v.keywords || '').slice(0, 120) }))
         };
     } catch (e) {
         return { error: e.message };
@@ -289,7 +349,7 @@ async function runCatalogDebug(id, q) {
 const app = express();
 app.use(cors());
 app.get('/', (req, res) => res.redirect('/manifest.json'));
-app.get('/debug-catalog/:id', async (req, res) => res.json(await runCatalogDebug(req.params.id, String(req.query.q || ''))));
+app.get('/debug-catalog/:id', async (req, res) => res.json(await runCatalogDebug(req.params.id, String(req.query.q || ''), parseInt(req.query.skip, 10) || 0)));
 app.get('/debug/:id', async (req, res) => res.json(await runDebug(req.params.id)));
 app.use('/', getRouter(builder.getInterface()));
 
