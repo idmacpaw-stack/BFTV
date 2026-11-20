@@ -45,7 +45,6 @@ builder.defineCatalogHandler(async function(args) {
 
             if (title && relativeLink) {
                 const videoId = 'bftv_' + Buffer.from(relativeLink).toString('base64').replace(/=/g, '');
-                metas.path = relativeLink;
                 metas.push({
                     id: videoId,
                     type: 'movie',
@@ -98,35 +97,40 @@ builder.defineStreamHandler(async function(args) {
     }
 });
 
-// Handler export langsung untuk Vercel Serverless Function
 const addonInterface = builder.getInterface();
 
 module.exports = async function (req, res) {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', '*');
     
-    const url = req.url;
+    const urlObj = new URL(req.url, `http://${req.headers.host || 'localhost'}`);
+    const pathname = urlObj.pathname;
     
-    if (url === '/' || url === '/manifest.json') {
+    if (pathname === '/' || pathname === '/manifest.json') {
         res.setHeader('Content-Type', 'application/json');
         return res.status(200).send(JSON.stringify(addonInterface.manifest));
     }
     
-    const parts = url.split('/').filter(Boolean);
+    const parts = pathname.split('/').filter(Boolean);
     if (parts.length >= 2) {
         const resource = parts[0];
         const type = parts[1];
-        const id = parts[2] ? parts[2].replace('.json', '') : '';
-        const extraParam = parts[3] ? decodeURIComponent(parts[3].replace('.json', '')) : null;
+        const idWithExt = parts[2] || '';
+        const id = idWithExt.replace('.json', '');
+        const extraWithExt = parts[3] || '';
+        const extraParam = extraWithExt.replace('.json', '');
         
         try {
             let extra = {};
             if (extraParam) {
-                const queryParts = extraParam.split('&');
+                const decodedExtra = decodeURIComponent(extraParam);
+                const queryParts = decodedExtra.split('&');
                 for (const q of queryParts) {
                     const [k, v] = q.split('=');
                     if (k && v) extra[k] = decodeURIComponent(v);
                 }
+            } else if (urlObj.searchParams.has('search')) {
+                extra.search = urlObj.searchParams.get('search');
             }
             
             if (resource === 'catalog') {
