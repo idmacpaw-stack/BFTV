@@ -104,21 +104,100 @@ builder.defineMetaHandler(async (args) => {
     }
 });
 
+const UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36';
+const SITE = 'https://www.eporner.com';
+
+// Hash untuk endpoint xhr Eporner: 4 potongan hex (8 karakter) -> base36
+function calcHash(h) {
+    let out = '';
+    for (let i = 0; i < 32; i += 8) {
+        out += parseInt(h.slice(i, i + 8), 16).toString(36);
+    }
+    return out;
+}
+
+async function getDirectStreams(pageUrl) {
+    const page = await http.get(pageUrl, {
+        timeout: 6000,
+        headers: { 'User-Agent': UA, Referer: SITE + '/' }
+    });
+    const html = typeof page.data === 'string' ? page.data : '';
+
+    const vid = (html.match(/vid\s*[:=]\s*['"]([A-Za-z0-9]+)['"]/) || [])[1];
+    const hash = (html.match(/hash\s*[:=]\s*['"]([0-9a-f]{32})['"]/) || [])[1];
+    const found = [];
+
+    // Cara 1: endpoint xhr
+    if (vid && hash) {
+        try {
+            const { data } = await http.get(`${SITE}/xhr/video/${vid}`, {
+                timeout: 6000,
+                params: {
+                    hash: calcHash(hash),
+                    domain: 'www.eporner.com',
+                    fallback: 'false',
+                    embed: 'false',
+                    supportedFormats: 'mp4'
+                },
+                headers: { 'User-Agent': UA, Referer: pageUrl, 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            const mp4 = data && data.sources && data.sources.mp4;
+            if (mp4) {
+                for (const [label, info] of Object.entries(mp4)) {
+                    const src = info && (info.src || info.url);
+                    if (src) found.push({ label, url: src.startsWith('//') ? 'https:' + src : src });
+                }
+            }
+        } catch (e) {
+            console.error('xhr error:', e.message);
+        }
+    }
+
+    // Cara 2: link download di halaman
+    if (!found.length) {
+        const re = /href="(\/dload\/[^"]+?-(\d{3,4})p[^"]*\.mp4)"/g;
+        let m;
+        while ((m = re.exec(html)) !== null) {
+            found.push({ label: m[2] + 'p', url: SITE + m[1] });
+        }
+    }
+
+    const height = l => parseInt(l, 10) || 0;
+    return found.sort((a, b) => height(b.label) - height(a.label));
+}
+
 builder.defineStreamHandler(async (args) => {
     const id = args.id.replace(PREFIX, '');
     try {
         const v = await getVideo(id);
         const streams = [];
+
         if (v && v.url) {
-            // API Eporner tidak memberi link video langsung,
-            // jadi dibuka lewat browser (externalUrl)
+            try {
+                const direct = await getDirectStreams(v.url);
+                for (const d of direct) {
+                    streams.push({
+                        name: 'Eporner',
+                        title: d.label,
+                        url: d.url,
+                        behaviorHints: {
+                            notWebReady: true,
+                            proxyHeaders: { request: { 'User-Agent': UA, Referer: SITE + '/' } }
+                        }
+                    });
+                }
+            } catch (e) {
+                console.error('direct error:', e.message);
+            }
+
+            // Cadangan: buka di browser
             streams.push({
                 name: 'Eporner',
                 title: 'Buka di browser',
                 externalUrl: v.url
             });
         }
-        return { streams };
+        return { streams, cacheMaxAge: 300 };
     } catch (err) {
         console.error('stream error:', err.message);
         return { streams: [] };
@@ -127,6 +206,7 @@ builder.defineStreamHandler(async (args) => {
 
 const app = express();
 app.use(cors());
+app.get('/', (req, res) => res.redirect('/manifest.json'));
 app.use('/', getRouter(builder.getInterface()));
 
 module.exports = app;
