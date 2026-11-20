@@ -12,11 +12,18 @@ const PREFIX = 'gpub_';
 // Katalog Eporner. "order" mengikuti parameter API Eporner.
 // Pencarian hanya dipasang di katalog pertama supaya hasil tidak muncul berulang.
 const CATALOGS = [
-    { id: 'ep_weekly',  name: 'Eporner - Top Minggu Ini',   order: 'top-weekly',   search: true },
-    { id: 'ep_latest',  name: 'Eporner - Terbaru',          order: 'latest' },
-    { id: 'ep_popular', name: 'Eporner - Terpopuler',       order: 'most-popular' },
-    { id: 'ep_rated',   name: 'Eporner - Rating Tertinggi', order: 'top-rated' },
-    { id: 'ep_monthly', name: 'Eporner - Top Bulan Ini',    order: 'top-monthly' }
+    { id: 'ep_weekly',  name: "Let's Fun! - Top Minggu Ini",   order: 'top-weekly',   search: true },
+    { id: 'ep_latest',  name: "Let's Fun! - Terbaru",          order: 'latest' },
+    { id: 'ep_popular', name: "Let's Fun! - Terpopuler",       order: 'most-popular' },
+    { id: 'ep_rated',   name: "Let's Fun! - Rating Tertinggi", order: 'top-rated' },
+    { id: 'ep_monthly', name: "Let's Fun! - Top Bulan Ini",    order: 'top-monthly' },
+
+    // Kategori berdasarkan kata kunci (tetap hanya konten gay lewat filter di bawah)
+    { id: 'ep_black',    name: "Let's Fun! - Black",              query: 'black',              order: 'most-popular' },
+    { id: 'ep_bigdick',  name: "Let's Fun! - Big Dick",           query: 'big dick',           order: 'most-popular' },
+    { id: 'ep_dp',       name: "Let's Fun! - Double Penetration", query: 'double penetration', order: 'most-popular' },
+    { id: 'ep_fisting',  name: "Let's Fun! - Fisting",            query: 'fisting',            order: 'most-popular' },
+    { id: 'ep_orgy',     name: "Let's Fun! - Orgy",               query: 'orgy',               order: 'most-popular' }
 ];
 
 // Filter konten: hanya video gay. Daftar bisa diubah sesuai selera.
@@ -33,9 +40,9 @@ function classify(v) {
 
 const manifest = {
     id: 'org.customgayaddon.stream',
-    version: '5.1.0',
-    name: 'Gay Video Catalog Addon',
-    description: 'Katalog video dari Eporner',
+    version: '5.3.0',
+    name: "Let's Fun!",
+    description: "Let's Fun! - katalog video pilihan",
     resources: ['catalog', 'meta', 'stream'],
     types: ['movie'],
     catalogs: CATALOGS.map(c => ({
@@ -72,7 +79,7 @@ function toMeta(video) {
 async function fetchEpCatalog(cat, search, page) {
     const { data } = await http.get(`${EP_API}/video/search/`, {
         params: {
-            query: search || 'gay',
+            query: search || cat.query || 'gay',
             gay: 2, // 2 = hanya konten gay
             per_page: PAGE_SIZE,
             page,
