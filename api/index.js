@@ -204,9 +204,48 @@ builder.defineStreamHandler(async (args) => {
     }
 });
 
+
+// Halaman diagnosa: buka /debug/<id video Eporner>
+async function runDebug(id) {
+    const out = { id };
+    try {
+        const v = await getVideo(id);
+        out.apiUrl = v && v.url;
+        const page = await http.get(v.url, {
+            timeout: 6000,
+            validateStatus: () => true,
+            headers: { 'User-Agent': UA, Referer: SITE + '/' }
+        });
+        const html = typeof page.data === 'string' ? page.data : '';
+        out.pageStatus = page.status;
+        out.pageLength = html.length;
+        out.cloudflareBlock = /Just a moment|cf-chl|challenge-platform|Attention Required/i.test(html);
+        const vid = (html.match(/vid\s*[:=]\s*['"]([A-Za-z0-9]+)['"]/) || [])[1];
+        const hash = (html.match(/hash\s*[:=]\s*['"]([0-9a-f]{32})['"]/) || [])[1];
+        out.vidFound = !!vid;
+        out.hashFound = !!hash;
+        out.dloadLinksFound = (html.match(/\/dload\/[^"]+\.mp4/g) || []).length;
+        out.pageSnippet = html.slice(0, 200);
+        if (vid && hash) {
+            const x = await http.get(`${SITE}/xhr/video/${vid}`, {
+                timeout: 6000,
+                validateStatus: () => true,
+                params: { hash: calcHash(hash), domain: 'www.eporner.com', fallback: 'false', embed: 'false', supportedFormats: 'mp4' },
+                headers: { 'User-Agent': UA, Referer: v.url, 'X-Requested-With': 'XMLHttpRequest' }
+            });
+            out.xhrStatus = x.status;
+            out.xhrSample = JSON.stringify(x.data).slice(0, 400).replace(/https?:\/\/[^"]+/g, '[url]');
+        }
+    } catch (e) {
+        out.error = e.message;
+    }
+    return out;
+}
+
 const app = express();
 app.use(cors());
 app.get('/', (req, res) => res.redirect('/manifest.json'));
+app.get('/debug/:id', async (req, res) => res.json(await runDebug(req.params.id)));
 app.use('/', getRouter(builder.getInterface()));
 
 module.exports = app;
