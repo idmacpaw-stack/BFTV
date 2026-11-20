@@ -26,6 +26,8 @@ const SCRAPED = {
         base: XH_BASE,
         pageSize: 40,
         linkRe: /href="((?:https?:\/\/[^"\/]*xhamster\d*\.[a-z]+)?\/videos\/[^"#?]+)"/,
+        // cadangan: xHamster sering menaruh daftar video di JSON dalam halaman, bukan di tag <a>
+        jsonLinkRe: /https?:\/\/[^"'\s<>\\]*xhamster\d*\.[a-z]+(\/videos\/[A-Za-z0-9._~%-]+)/g,
         listUrl(query, page) {
             if (query) {
                 const q = encodeURIComponent('gay ' + query).replace(/%20/g, '+');
@@ -203,6 +205,40 @@ function parseListing(html, linkRe, base) {
     }));
 }
 
+function nearest(list, idx) {
+    let best = null;
+    for (const c of list) {
+        if (Math.abs(c.pos - idx) <= 600 && (!best || Math.abs(c.pos - idx) < Math.abs(best.pos - idx))) best = c;
+    }
+    return best ? best.val : null;
+}
+
+function parseJsonListing(html, jsonLinkRe, base) {
+    const t = unescapeJs(html);
+    const titles = [];
+    const thumbs = [];
+    let m;
+    const titleRe = /"title"\s*:\s*"([^"]{3,200})"/g;
+    while ((m = titleRe.exec(t)) !== null) titles.push({ pos: m.index, val: decodeEntities(m[1]) });
+    const thumbRe = /"(?:thumbURL|thumbUrl|imageURL|imageUrl|thumb|image|poster)"\s*:\s*"((?:https?:)?\/\/[^"]+\.(?:jpe?g|png|webp)[^"]*)"/g;
+    while ((m = thumbRe.exec(t)) !== null) thumbs.push({ pos: m.index, val: m[1] });
+
+    const re = new RegExp(jsonLinkRe.source, 'g');
+    const map = new Map();
+    while ((m = re.exec(t)) !== null) {
+        const path = m[1];
+        if (map.has(path)) continue;
+        const title = nearest(titles, m.index);
+        const thumb = nearest(thumbs, m.index);
+        map.set(path, {
+            path,
+            title: title || slugTitle(path),
+            thumb: thumb ? absUrl(thumb, base) || undefined : undefined
+        });
+    }
+    return Array.from(map.values());
+}
+
 // ---------- Pencari link video di halaman (xHamster & BoyfriendTV) ----------
 function unescapeJs(s) {
     return s
@@ -272,8 +308,13 @@ function toScrapedMeta(cfg, item) {
 async function scrapeCatalog(cfg, query, page) {
     const url = cfg.listUrl(query, page);
     const r = await fetchHtml(url, cfg.base + '/');
-    const items = parseListing(r.html, cfg.linkRe, cfg.base);
-    return { url, status: r.status, finalUrl: r.finalUrl, html: r.html, items };
+    let items = parseListing(r.html, cfg.linkRe, cfg.base);
+    let via = 'href';
+    if (!items.length && cfg.jsonLinkRe) {
+        items = parseJsonListing(r.html, cfg.jsonLinkRe, cfg.base);
+        via = 'json';
+    }
+    return { url, status: r.status, finalUrl: r.finalUrl, html: r.html, items, via };
 }
 
 // ---------- Eporner: katalog / meta ----------
@@ -530,11 +571,28 @@ async function runDebug(id) {
     return out;
 }
 
+function pageTitle(html) {
+    const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+    return m ? decodeEntities(m[1]).slice(0, 200) : null;
+}
+
 function pageFlags(html) {
+    const age = html.match(/.{0,80}(?:age verification|verify your age|are you 18|over 18|age-gate|agegate).{0,80}/i);
     return {
         cloudflareBlock: /Just a moment|cf-chl|challenge-platform|Attention Required|cf-browser-verification/i.test(html),
-        ageGateHint: /age verification|verify your age|are you 18|over 18|age-gate|agegate/i.test(html)
+        ageGateHint: !!age,
+        ageGateContext: age ? age[0].replace(/\s+/g, ' ') : undefined
     };
+}
+
+function bodyText(html) {
+    return html
+        .replace(/<script[\s\S]*?<\/script>/gi, ' ')
+        .replace(/<style[\s\S]*?<\/style>/gi, ' ')
+        .replace(/<[^>]+>/g, ' ')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 400);
 }
 
 // 2) /debug-list/xh?q=kata&page=1  atau  /debug-list/bf
@@ -548,8 +606,14 @@ async function runListDebug(site, query, page) {
         out.status = r.status;
         out.finalUrl = r.finalUrl;
         out.length = r.html.length;
-        out.title = (r.html.match(/<title>([^<]*)<\/title>/i) || [])[1];
+        out.title = pageTitle(r.html);
         Object.assign(out, pageFlags(r.html));
+        out.bodyText = bodyText(r.html);
+        out.videosMentions = (r.html.match(/\/videos\//g) || []).length;
+        out.hasInitials = /window\.initials/i.test(r.html);
+        out.hrefSample = (r.html.match(/href="[^"]*\/videos\/[^"]*"/g) || []).slice(0, 5).map(x => x.slice(0, 160));
+        out.jsonSample = (unescapeJs(r.html).match(/.{0,120}\/videos\/[A-Za-z0-9._~%-]+.{0,120}/) || [])[0];
+        out.via = r.via;
         out.itemCount = r.items.length;
         out.withThumb = r.items.filter(i => i.thumb).length;
         out.sample = r.items.slice(0, 3).map(i => ({
@@ -585,8 +649,9 @@ async function runProbe(rawUrl) {
         out.status = r.status;
         out.finalUrl = r.finalUrl;
         out.length = html.length;
-        out.title = (html.match(/<title>([^<]*)<\/title>/i) || [])[1];
+        out.title = pageTitle(html);
         Object.assign(out, pageFlags(html));
+        out.bodyText = bodyText(html);
         out.cookieNames = (r.headers['set-cookie'] || []).map(c => c.split('=')[0]);
         out.m3u8Count = (html.match(/\.m3u8/g) || []).length;
         out.mp4Count = (html.match(/\.mp4/g) || []).length;
