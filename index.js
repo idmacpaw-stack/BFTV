@@ -1,10 +1,11 @@
+const { addonBuilder, getRouter } = require('stremio-addon-sdk');
 const axios = require('axios');
 
 const manifest = {
     id: 'org.customgayaddon.stream',
-    version: '2.5.0',
+    version: '2.6.0',
     name: 'Gay Video Catalog Addon',
-    description: 'Katalog Video Stabil dari Sumber Publik',
+    description: 'Katalog Video Khusus Gay Stabil dari Sumber Publik',
     resources: ['catalog', 'meta', 'stream'],
     types: ['movie'],
     catalogs: [
@@ -18,93 +19,97 @@ const manifest = {
     idPrefixes: ['gpub_']
 };
 
-module.exports = async function (req, res) {
+const builder = new addonBuilder(manifest);
+
+builder.defineCatalogHandler(async function(args) {
     try {
-        res.setHeader('Access-Control-Allow-Origin', '*');
-        res.setHeader('Access-Control-Allow-Headers', '*');
-        res.setHeader('Content-Type', 'application/json');
+        let apiUrl = 'https://www.eporner.com/api/v2/video/best/?per=30&format=json';
 
-        const host = req.headers && req.headers.host ? req.headers.host : 'localhost';
-        const urlObj = new URL(req.url || '/', `https://${host}`);
-        const pathname = urlObj.pathname;
-
-        if (pathname === '/' || pathname === '/manifest.json') {
-            return res.status(200).send(JSON.stringify(manifest));
+        if (args && args.extra && args.extra.search) {
+            const query = encodeURIComponent(`gay ${args.extra.search.trim()}`);
+            apiUrl = `https://www.eporner.com/api/v2/video/search/?query=${query}&per=30&format=json`;
         }
 
-        const parts = pathname.split('/').filter(Boolean);
-        if (parts.length >= 3) {
-            const resource = parts[0];
-            const id = decodeURIComponent(parts[2].replace(/\.json$/, ''));
+        const response = await axios.get(apiUrl, { timeout: 8000 });
+        const data = response.data;
+        const metas = [];
 
-            if (resource === 'catalog') {
-                // Menggunakan endpoint /best/ agar langsung mengembalikan video populer tanpa filter query yang ketat
-                const apiUrl = 'https://www.eporner.com/api/v2/video/best/?per=30&format=json';
-                
-                const response = await axios.get(apiUrl, { timeout: 8000 });
-                const data = response.data;
-                const metas = [];
-
-                if (data && data.videos && Array.isArray(data.videos)) {
-                    data.videos.forEach(video => {
-                        if (video && video.url && video.title) {
-                            const videoId = 'gpub_' + Buffer.from(video.url).toString('base64').replace(/=/g, '');
-                            metas.push({
-                                id: videoId,
-                                type: 'movie',
-                                name: video.title,
-                                poster: video.default_thumb && video.default_thumb.src ? video.default_thumb.src : '',
-                                posterShape: 'landscape',
-                                description: `Duration: ${video.duration || 'N/A'} | Views: ${video.views || 0}`
-                            });
-                        }
+        if (data && data.videos && Array.isArray(data.videos)) {
+            data.videos.forEach(video => {
+                if (video && video.url && video.title) {
+                    const videoId = 'gpub_' + Buffer.from(video.url).toString('base64').replace(/=/g, '');
+                    metas.push({
+                        id: videoId,
+                        type: 'movie',
+                        name: video.title,
+                        poster: video.default_thumb && video.default_thumb.src ? video.default_thumb.src : '',
+                        posterShape: 'landscape',
+                        description: `Duration: ${video.duration || 'N/A'} | Views: ${video.views || 0}`
                     });
                 }
-                return res.status(200).send(JSON.stringify({ metas }));
+            });
+        }
+
+        return { metas };
+    } catch (error) {
+        return { metas: [] };
+    }
+});
+
+builder.defineMetaHandler(async function(args) {
+    try {
+        const encodedPart = args.id.replace('gpub_', '');
+        const videoUrl = Buffer.from(encodedPart, 'base64').toString('utf8');
+
+        return {
+            meta: {
+                id: args.id,
+                type: 'movie',
+                name: 'Video Detail',
+                poster: '',
+                description: `Source URL: ${videoUrl}`
             }
-
-            if (resource === 'meta') {
-                const encodedPart = id.replace('gpub_', '');
-                const videoUrl = Buffer.from(encodedPart, 'base64').toString('utf8');
-                return res.status(200).send(JSON.stringify({
-                    meta: {
-                        id: id,
-                        type: 'movie',
-                        name: 'Video Detail',
-                        poster: '',
-                        description: `Source URL: ${videoUrl}`
-                    }
-                }));
+        };
+    } catch (error) {
+        return {
+            meta: {
+                id: args.id,
+                type: 'movie',
+                name: 'Video'
             }
+        };
+    }
+});
 
-            if (resource === 'stream') {
-                const encodedPart = id.replace('gpub_', '');
-                const videoPath = Buffer.from(encodedPart, 'base64').toString('utf8');
-                const videoIdMatch = videoPath.split('/').filter(Boolean).pop();
-                
-                if (!videoIdMatch) return res.status(200).send(JSON.stringify({ streams: [] }));
+builder.defineStreamHandler(async function(args) {
+    try {
+        const encodedPart = args.id.replace('gpub_', '');
+        const videoPath = Buffer.from(encodedPart, 'base64').toString('utf8');
+        const videoIdMatch = videoPath.split('/').filter(Boolean).pop();
+        
+        if (!videoIdMatch) return { streams: [] };
 
-                const apiDetailUrl = `https://www.eporner.com/api/v2/video/id/?id=${videoIdMatch}&format=json`;
-                const response = await axios.get(apiDetailUrl, { timeout: 8000 });
-                const data = response.data;
+        const apiDetailUrl = `https://www.eporner.com/api/v2/video/id/?id=${videoIdMatch}&format=json`;
+        const response = await axios.get(apiDetailUrl, { timeout: 8000 });
+        const data = response.data;
 
-                const streams = [];
-                if (data && data.sources) {
-                    for (const [quality, info] of Object.entries(data.sources)) {
-                        if (info && info.url) {
-                            streams.push({
-                                title: `Stream (${quality.toUpperCase()})`,
-                                url: info.url
-                            });
-                        }
-                    }
+        const streams = [];
+        if (data && data.sources) {
+            for (const [quality, info] of Object.entries(data.sources)) {
+                if (info && info.url) {
+                    streams.push({
+                        title: `Stream (${quality.toUpperCase()})`,
+                        url: info.url
+                    });
                 }
-                return res.status(200).send(JSON.stringify({ streams }));
             }
         }
 
-        return res.status(404).send(JSON.stringify({ error: 'Not Found' }));
-    } catch (e) {
-        return res.status(200).send(JSON.stringify({ metas: [], streams: [], error: e.message }));
+        return { streams };
+    } catch (error) {
+        return { streams: [] };
     }
-};
+});
+
+const router = getRouter(builder.getInterface());
+module.exports = router;
