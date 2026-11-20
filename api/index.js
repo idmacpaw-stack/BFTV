@@ -14,6 +14,7 @@ const PREFIX = 'gpub_';
 // "must" = (opsional) judul/tag wajib cocok dengan pola ini.
 // Pencarian hanya dipasang di katalog pertama supaya hasil tidak muncul berulang.
 const BLACK_RE = /\b(black|ebony|bbc|african|afro)\b/i;
+const INDO_RE = /\b(indo|indonesia|indonesian)\b/i;
 
 const CATALOGS = [
     { id: 'ep_weekly',  name: "Let's Fun! - Top Minggu Ini",   order: 'top-weekly',   search: true },
@@ -32,7 +33,9 @@ const CATALOGS = [
     { id: 'ep_fisting', name: "Let's Fun! - Fisting",            order: 'most-popular',
       queries: ['fisting gay'] },
     { id: 'ep_orgy',    name: "Let's Fun! - Orgy",               order: 'most-popular',
-      queries: ['orgy gay', 'group sex gay'] }
+      queries: ['orgy gay', 'group sex gay'] },
+    { id: 'ep_indo',    name: "Let's Fun! - Indonesia",          order: 'most-popular', must: INDO_RE,
+      queries: ['indonesian gay', 'indo gay', 'indonesia gay'] }
 ];
 
 // Filter konten: hanya video gay. Daftar bisa diubah sesuai selera.
@@ -52,7 +55,7 @@ function classify(v, must) {
 
 const manifest = {
     id: 'org.customgayaddon.stream',
-    version: '5.4.0',
+    version: '5.5.0',
     name: "Let's Fun!",
     description: "Let's Fun! - katalog video pilihan",
     resources: ['catalog', 'meta', 'stream'],
