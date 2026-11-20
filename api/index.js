@@ -16,6 +16,7 @@ const PREFIX = 'gpub_';
 const BLACK_RE = /\b(black|ebony|bbc|african|afro)\b/i;
 const MUSCLE_RE = /\b(muscle|muscles|muscular|muscled|bodybuilder|bodybuilders|jock|jocks)\b/i;
 const DADDY_RE = /\b(daddy|daddies|dad|stepdad|stepfather|father|bear|bears|mature|older)\b/i;
+const HARDCORE_RE = /\b(hardcore|rough|bareback|brutal|extreme)\b/i;
 const INDO_RE = /\b(indo|indonesia|indonesian)\b/i;
 
 const CATALOGS = [
@@ -44,6 +45,8 @@ const CATALOGS = [
       queries: ['daddy gay', 'gay daddy', 'bear gay'] },
     { id: 'ep_4k',      name: "Let's Fun! - 4K",                 order: 'most-popular',
       queries: ['4k gay', 'uhd gay'] },
+    { id: 'ep_hardcore', name: "Let's Fun! - Hardcore",           order: 'most-popular', must: HARDCORE_RE,
+      queries: ['hardcore gay', 'rough gay', 'bareback gay'] },
     // Movies: diurutkan dari yang terpanjang, minimal 20 menit
     { id: 'ep_long',    name: "Let's Fun! - Movies",             order: 'longest', minSec: 1200,
       queries: ['gay', 'gay movie', 'gay full movie'] }
@@ -67,7 +70,7 @@ function classify(v, cat) {
 
 const manifest = {
     id: 'org.customgayaddon.stream',
-    version: '5.6.0',
+    version: '5.7.0',
     name: "Let's Fun!",
     description: "Let's Fun! - katalog video pilihan",
     resources: ['catalog', 'meta', 'stream'],
