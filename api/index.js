@@ -14,6 +14,8 @@ const PREFIX = 'gpub_';
 // "must" = (opsional) judul/tag wajib cocok dengan pola ini.
 // Pencarian hanya dipasang di katalog pertama supaya hasil tidak muncul berulang.
 const BLACK_RE = /\b(black|ebony|bbc|african|afro)\b/i;
+const MUSCLE_RE = /\b(muscle|muscles|muscular|muscled|bodybuilder|bodybuilders|jock|jocks)\b/i;
+const DADDY_RE = /\b(daddy|daddies|dad|stepdad|stepfather|father|bear|bears|mature|older)\b/i;
 const INDO_RE = /\b(indo|indonesia|indonesian)\b/i;
 
 const CATALOGS = [
@@ -35,7 +37,16 @@ const CATALOGS = [
     { id: 'ep_orgy',    name: "Let's Fun! - Orgy",               order: 'most-popular',
       queries: ['orgy gay', 'group sex gay'] },
     { id: 'ep_indo',    name: "Let's Fun! - Indonesia",          order: 'most-popular', must: INDO_RE,
-      queries: ['indonesian gay', 'indo gay', 'indonesia gay'] }
+      queries: ['indonesian gay', 'indo gay', 'indonesia gay'] },
+    { id: 'ep_muscle',  name: "Let's Fun! - Muscle",             order: 'most-popular', must: MUSCLE_RE,
+      queries: ['muscle gay', 'muscular gay', 'bodybuilder gay'] },
+    { id: 'ep_daddy',   name: "Let's Fun! - Daddy",              order: 'most-popular', must: DADDY_RE,
+      queries: ['daddy gay', 'gay daddy', 'bear gay'] },
+    { id: 'ep_4k',      name: "Let's Fun! - 4K",                 order: 'most-popular',
+      queries: ['4k gay', 'uhd gay'] },
+    // Movies: diurutkan dari yang terpanjang, minimal 20 menit
+    { id: 'ep_long',    name: "Let's Fun! - Movies",             order: 'longest', minSec: 1200,
+      queries: ['gay', 'gay movie', 'gay full movie'] }
 ];
 
 // Filter konten: hanya video gay. Daftar bisa diubah sesuai selera.
@@ -45,17 +56,18 @@ const REQUIRE_GAY_TAG = true;
 const BLOCK_RE = /\b(shemale|she-male|tranny|trannies|trans|transgender|ladyboy|ladyboys|tgirl|t-girl|femboy|femboys|futanari|lesbian|lesbians|bisexual|straight|hetero|mmf|ffm|girl|girls|woman|women|female|babe|babes|pussy|tits|boobs|busty)\b/i;
 const GAY_RE = /\b(gays?|twinks?)\b/i;
 
-function classify(v, must) {
+function classify(v, cat) {
     const text = `${v.title || ''} ${v.keywords || ''}`;
     if (BLOCK_RE.test(text)) return 'blocked';
     if (REQUIRE_GAY_TAG && !GAY_RE.test(text)) return 'not-gay';
-    if (must && !must.test(text)) return 'off-topic';
+    if (cat && cat.must && !cat.must.test(text)) return 'off-topic';
+    if (cat && cat.minSec && v.length_sec && Number(v.length_sec) < cat.minSec) return 'too-short';
     return 'ok';
 }
 
 const manifest = {
     id: 'org.customgayaddon.stream',
-    version: '5.5.0',
+    version: '5.6.0',
     name: "Let's Fun!",
     description: "Let's Fun! - katalog video pilihan",
     resources: ['catalog', 'meta', 'stream'],
@@ -147,7 +159,7 @@ async function fetchEpCatalog(cat, search, skip) {
     const kept = [];
     const removed = [];
     for (const v of merged) {
-        const verdict = classify(v, cat.must);
+        const verdict = classify(v, cat);
         if (verdict === 'ok') kept.push(v);
         else removed.push({ title: v.title, why: verdict });
     }
